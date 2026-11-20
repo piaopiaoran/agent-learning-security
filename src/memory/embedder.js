@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { OpenAIEmbeddings } from "@langchain/openai";
-import { config } from "../config.js";
+import { config, getSecret } from "../config.js";
 
 /** 本地确定性伪向量：只为让 offline demo 无需 API key 也能跑通检索链路。
  *  它没有任何语义能力，仅保证「相同文本 → 相同向量」，不可用于生产。 */
@@ -22,7 +22,7 @@ export function createEmbedder({ offline = false } = {}) {
   if (!offline && config.hasLLM) {
     const client = new OpenAIEmbeddings({
       model: config.EMBEDDING_MODEL,
-      apiKey: config.OPENAI_API_KEY,
+      apiKey: getSecret("openai"),
       dimensions: config.EMBED_DIM,
     });
     return {

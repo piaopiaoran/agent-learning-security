@@ -86,8 +86,9 @@ curl -s -X POST localhost:3000/approve \
 │   ├── tools/                    # 能力清单（唯一 allowlist）+ 受控执行器
 │   ├── graph/                    # State / Nodes / 图编译 / 假模型
 │   ├── runtime.js                # 依赖组装、会话、中断恢复
+│   ├── observability.js          # LangSmith 状态自检 / trace metadata / flush
 │   ├── app.js / server.js        # CLI 演示 / HTTP 入口
-└── test/                         # 27 个用例：单测 + 图级端到端
+└── test/                         # 31 个用例：单测 + 图级 + 可观测性
 ```
 
 ---
@@ -226,9 +227,34 @@ A：要。出口要拦凭据/PII 泄漏、系统提示泄漏，以及**幻觉式
 
 ---
 
-## 9. 验证状态
+## 9. 可观测性（LangSmith）
 
-- `npm test`：**27 个用例全绿**（19 个纯函数 + 8 个图级端到端）。
+LangChain.js / LangGraph 的 Runnable 会**自动读取环境变量**，不需要在业务代码里手动创建 tracer。
+
+| 变量 | 作用 | 默认值 |
+|---|---|---|
+| `LANGSMITH_TRACING` | 总开关 | `false`（`.env.example`） |
+| `LANGSMITH_API_KEY` | 认证，**只放本地 `.env`** | 空 |
+| `LANGSMITH_PROJECT` | 项目名 | `agent-security-lab` |
+| `LANGSMITH_ENDPOINT` | 区域端点 | `https://api.smith.langchain.com` |
+
+本地 `.env` 已开启。填入 `OPENAI_API_KEY` 后跑 `npm run demo`，能在 LangSmith 看到 graph → 节点 → LLM → 工具 的完整 span；只有假模型时只记录图级 run。
+
+**三个安全约束**（这本身就是面试考点）：
+
+1. **密钥不进 config 对象**。`config.js` 把 `OPENAI_API_KEY` / `LANGSMITH_API_KEY` 从导出的对象里剥离，只在真正发请求时通过 `getSecret(name)` 白名单取用——防止 `console.log(config)`、错误堆栈或 trace metadata 整体带出密钥。`test/observability.test.js` 有回归断言。
+2. **trace metadata 最小披露**。`traceConfig()` 只挂 `traceId / sessionId / tenantId / role / offline`，绝不挂用户输入、工具参数、系统提示，连 `userId` 都不给第三方。其中 `traceId` 与 `audit_events.trace_id` 一致，可在 LangSmith 与审计表之间双向定位。
+3. **开启追踪 = 新增一个数据出口**。prompt、工具参数、模型输出会被发送到第三方。本项目已在入模前做 PII 脱敏，但生产仍需评估数据出境合规；金融/医疗场景应改自托管 LangSmith 或关闭内容采集。
+
+短命 CLI 进程退出前用 `awaitAllCallbacks()`（`flushTraces()`）等待后台 trace 提交完成，否则会丢最后几条 span。`npm test` 显式设 `LANGSMITH_TRACING=false`，保证单测**不产生任何外部网络副作用**。
+
+> **和 L9 审计的分工**：LangSmith 看「执行链路与性能」，可采样、可丢弃、由第三方保存；`audit_events` 看「安全决策与取证」，append-only、禁改禁删、留在自己的数据库。两者不能互相替代。
+
+---
+
+## 10. 验证状态
+
+- `npm test`：**31 个用例全绿**（19 个纯函数 + 8 个图级端到端 + 4 个可观测性约束）。
 - `npm run demo:offline`：7 条链路全部跑通，含注入拒绝、Unicode 混淆、RBAC、批准/驳回 HITL、记忆投毒隔离、PII 脱敏。
 - 数据库路径需要 Docker；本机未安装，故未做容器实测。
 

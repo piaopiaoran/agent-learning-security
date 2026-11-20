@@ -13,7 +13,7 @@
     "demo": "node src/app.js",
     "demo:offline": "node src/app.js --offline",
     "server": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "LANGSMITH_TRACING=false node --test test/*.test.js"
   },
   "dependencies": {
     "@langchain/core": "^1.4.2",

@@ -12,6 +12,12 @@ const schema = z.object({
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
 
+  // LangSmith 只把「开关 / 项目名 / 端点」当配置，密钥单独隔离
+  LANGSMITH_TRACING: z.string().default("false"),
+  LANGSMITH_API_KEY: z.string().optional().default(""),
+  LANGSMITH_PROJECT: z.string().default("agent-security-lab"),
+  LANGSMITH_ENDPOINT: z.string().default("https://api.smith.langchain.com"),
+
   MAX_INPUT_CHARS: z.coerce.number().int().positive().default(8000),
   MAX_OUTPUT_CHARS: z.coerce.number().int().positive().default(4000),
   MAX_TOOL_OUTPUT_CHARS: z.coerce.number().int().positive().default(6000),
@@ -32,14 +38,32 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+// 密钥不进入 config 对象：防止 console.log(config)、错误堆栈、trace metadata
+// 或任何「整体展开配置」的地方把 key 带出去。observability.test.js 会守着这条约束。
+const { OPENAI_API_KEY, LANGSMITH_API_KEY, ...publicEnv } = env;
+
 export const config = Object.freeze({
-  ...env,
+  ...publicEnv,
   EMBED_DIM: 1536,
   allowedHosts: new Set(
-    env.ALLOWED_HTTP_HOSTS.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    publicEnv.ALLOWED_HTTP_HOSTS.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
   ),
-  hasLLM: env.OPENAI_API_KEY.length > 0,
+  hasLLM: OPENAI_API_KEY.length > 0,
+  langsmith: Object.freeze({
+    enabled: env.LANGSMITH_TRACING === "true" && LANGSMITH_API_KEY.length > 0,
+    project: env.LANGSMITH_PROJECT,
+    endpoint: env.LANGSMITH_ENDPOINT,
+  }),
 });
+
+/** 只在真正要发请求的模块里按需取用；返回值不要写进日志或 metadata */
+export function getSecret(name) {
+  switch (name) {
+    case "openai": return OPENAI_API_KEY;
+    case "langsmith": return LANGSMITH_API_KEY;
+    default: throw new Error(`unknown secret: ${name}`);
+  }
+}
 
 /** 系统提示：最小披露原则 —— 不写密钥、不写内部主机名、不写完整策略细节 */
 export const SYSTEM_PROMPT = `你是一个受控的企业助手。

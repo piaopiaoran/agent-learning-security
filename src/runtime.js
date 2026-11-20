@@ -10,6 +10,7 @@ import { builtinTools } from "./tools/builtins.js";
 import { createModel } from "./graph/model.js";
 import { buildGraph } from "./graph/buildGraph.js";
 import { createAuditor, createBudget, createRateLimiter } from "./security/index.js";
+import { traceConfig } from "./observability.js";
 
 function createApprovalStore({ pool }) {
   const records = [];
@@ -81,6 +82,8 @@ export function createSession(runtime, { tenantId, userId, role = "user", sessio
   const runConfig = {
     configurable: { thread_id: sessionId },
     recursionLimit: runtime.cfg.MAX_STEPS * 3,
+    // tags / metadata / runName 会被 LangSmith 自动采集；只含非敏感标识
+    ...traceConfig(identity),
   };
 
   return {

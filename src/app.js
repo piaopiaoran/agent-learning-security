@@ -1,4 +1,5 @@
 import { createRuntime, createSession, extractInterrupt } from "./runtime.js";
+import { flushTraces, logTracingStatus } from "./observability.js";
 
 /**
  * 离线演示：不需要 API key、不需要 Docker，把每一条安全防线都跑一遍并打印审计链。
@@ -10,6 +11,7 @@ const forceOffline = process.argv.includes("--offline");
 const runtime = await createRuntime(forceOffline ? { offline: true } : {});
 
 console.log(`\n=== agent-security-lab  |  mode: ${runtime.offline ? "offline (内存 + 假模型)" : "postgresql/pgvector + LLM"} ===`);
+logTracingStatus();
 
 // 预置知识库与一条「投毒」文档，用来演示 L2
 await runtime.vectorStore.add({
@@ -64,4 +66,5 @@ for (const sc of scenarios) {
 }
 
 console.log(`共记录 ${scenarios.length} 条链路。真实部署时这些事件写入 PostgreSQL audit_events（append-only）。`);
+await flushTraces();
 await runtime.close();

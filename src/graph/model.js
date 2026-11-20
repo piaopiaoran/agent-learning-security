@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ChatOpenAI } from "@langchain/openai";
 import { AIMessage } from "@langchain/core/messages";
-import { config } from "../config.js";
+import { config, getSecret } from "../config.js";
 
 /**
  * offline 假模型：规则驱动，用来在没有 API key / 没起数据库时跑通整条安全链路。
@@ -63,7 +63,7 @@ export function createModel({ offline = false, registry } = {}) {
   if (offline || !config.hasLLM) return createFakeModel();
   const llm = new ChatOpenAI({
     model: config.OPENAI_MODEL,
-    apiKey: config.OPENAI_API_KEY,
+    apiKey: getSecret("openai"),
     temperature: 0,
   });
   return llm.bindTools(registry.langchainTools());

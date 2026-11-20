@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import { config } from "./config.js";
 import { createRuntime, createSession, extractInterrupt } from "./runtime.js";
+import { flushTraces, logTracingStatus } from "./observability.js";
 
 const runtime = await createRuntime();
 const app = express();
@@ -78,4 +79,14 @@ app.post("/approve", async (req, res) => {
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
   console.log(`[server] http://localhost:${port}  offline=${runtime.offline}`);
+  logTracingStatus();
 });
+
+async function shutdown() {
+  // 长驻服务退出前也要等后台 trace 提交完
+  await flushTraces();
+  await runtime.close();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
