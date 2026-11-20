@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import { config } from "./config.js";
 import { createRuntime, createSession, extractInterrupt } from "./runtime.js";
-import { flushTraces, logTracingStatus } from "./observability.js";
+import { flushTraces, logDataEgress, logTracingStatus } from "./observability.js";
 
 const runtime = await createRuntime();
 const app = express();
@@ -10,7 +10,15 @@ app.use(express.json({ limit: "16kb" })); // body 体积限制也是一层入口
 const sessions = new Map();
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, offline: runtime.offline, tools: runtime.registry.names() });
+  res.json({
+    ok: true,
+    modelMode: runtime.modelMode,
+    storeMode: runtime.storeMode,
+    model: config.modelLabel,
+    llmEndpoint: config.llmEndpoint,
+    embeddingMode: config.embeddingMode,
+    tools: runtime.registry.names(),
+  });
 });
 
 app.post("/chat", async (req, res) => {
@@ -39,7 +47,7 @@ app.post("/chat", async (req, res) => {
       answer: result.finalAnswer ?? "",
       verdict: result.verdict ?? "",
       interrupt: pending ?? undefined,
-      ...(runtime.offline ? { audit: sess.auditor.events } : {}),
+      ...(runtime.storeMode === "memory" ? { audit: sess.auditor.events } : {}),
     });
   } catch (err) {
     console.error("[chat] failed", err);
@@ -68,7 +76,7 @@ app.post("/approve", async (req, res) => {
       status: "done",
       answer: result.finalAnswer ?? "",
       approval: result.approval ?? null,
-      ...(runtime.offline ? { audit: sess.auditor.events } : {}),
+      ...(runtime.storeMode === "memory" ? { audit: sess.auditor.events } : {}),
     });
   } catch (err) {
     console.error("[approve] failed", err);
@@ -78,8 +86,9 @@ app.post("/approve", async (req, res) => {
 
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
-  console.log(`[server] http://localhost:${port}  offline=${runtime.offline}`);
+  console.log(`[server] http://localhost:${port}  model=${runtime.modelMode}  store=${runtime.storeMode}`);
   logTracingStatus();
+  logDataEgress();
 });
 
 async function shutdown() {

@@ -69,7 +69,7 @@ export function createPgVectorStore({ pool, embedder }) {
   };
 }
 
-/** offline 演示用的内存实现，接口与 pgvector 版完全一致 */
+/** 内存实现：接口与 pgvector 版完全一致。离线演示与「真实 LLM + 内存存储」组合都用它 */
 export function createMemoryVectorStore({ embedder }) {
   const rows = [];
   return {

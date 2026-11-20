@@ -29,7 +29,7 @@ export const SECRET_RULES = [
   { id: "slack_token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
   { id: "private_key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { id: "bearer", re: /\bBearer\s+[A-Za-z0-9._-]{20,}/i },
-  { id: "env_secret", re: /(OPENAI_API_KEY|DATABASE_URL|AWS_SECRET_ACCESS_KEY)\s*=\s*\S{8,}/ },
+  { id: "env_secret", re: /(OPENAI_API_KEY|LLM_API_KEY|EMBEDDING_API_KEY|LANGSMITH_API_KEY|DATABASE_URL|AWS_SECRET_ACCESS_KEY)\s*=\s*\S{8,}/ },
 ];
 
 // PII（脱敏用，不是拦截用）

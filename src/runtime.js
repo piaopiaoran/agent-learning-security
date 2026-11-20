@@ -30,30 +30,47 @@ function createApprovalStore({ pool }) {
   };
 }
 
-/** 全局共享资源：连接池、模型、注册表、checkpointer、限流器 */
-export async function createRuntime({ offline } = {}) {
-  const isOffline = offline ?? !config.hasLLM;
-  const pool = isOffline ? null : createPool();
-  const embedder = createEmbedder({ offline: isOffline });
+/**
+ * 全局共享资源：连接池、模型、注册表、checkpointer、限流器。
+ *
+ * 两个正交维度（旧版误把它们绑成一个 offline）：
+ *   modelMode: fake | openai   —— 用不用第三方 LLM
+ *   storeMode: memory|postgres —— 用不用 PostgreSQL / pgvector / DB 审计
+ *
+ * 因此支持四种组合，最实用的是「openai + memory」：
+ * 有真实模型、有完整安全链路，但不需要 Docker，适合面试现场演示与调试。
+ * --offline 仍等价于强制 fake + memory（零密钥、零外部网络）。
+ */
+export async function createRuntime({ offline, model, store } = {}) {
+  const modelMode = offline ? "fake" : (model ?? config.modelMode);
+  const storeMode = offline ? "memory" : (store ?? config.storeMode);
+  const usePg = storeMode === "postgres";
+
+  const pool = usePg ? createPool() : null;
+  const embedder = createEmbedder();
   const registry = createRegistry(builtinTools);
-  const vectorStore = isOffline
-    ? createMemoryVectorStore({ embedder })
-    : createPgVectorStore({ pool, embedder });
+  const vectorStore = usePg
+    ? createPgVectorStore({ pool, embedder })
+    : createMemoryVectorStore({ embedder });
   const approvalStore = createApprovalStore({ pool });
 
   let checkpointer;
-  if (isOffline) {
-    checkpointer = new MemorySaver();
-  } else {
+  if (usePg) {
     checkpointer = new PostgresSaver(pool);
     await checkpointer.setup();
+  } else {
+    checkpointer = new MemorySaver();
   }
 
-  const model = createModel({ offline: isOffline, registry });
+  const llm = createModel({ offline: modelMode === "fake", registry });
 
   return {
-    offline: isOffline,
-    pool, registry, vectorStore, approvalStore, checkpointer, model,
+    // 兼容字段：完全无外部依赖时才算 offline
+    offline: modelMode === "fake" && !usePg,
+    modelMode,
+    storeMode,
+    pool, registry, vectorStore, embedder, approvalStore, checkpointer,
+    model: llm,
     cfg: config,
     rateLimiter: createRateLimiter({ limit: config.RATE_LIMIT_PER_MIN }),
     async close() {
@@ -74,7 +91,7 @@ export function createSession(runtime, { tenantId, userId, role = "user", sessio
   const auditor = createAuditor({
     pool: runtime.pool,
     base: { traceId, sessionId, tenantId, userId },
-    mode: runtime.offline ? "memory" : "db",
+    mode: runtime.storeMode === "postgres" ? "db" : "memory",
     strict: false,
   });
 
@@ -83,7 +100,9 @@ export function createSession(runtime, { tenantId, userId, role = "user", sessio
     configurable: { thread_id: sessionId },
     recursionLimit: runtime.cfg.MAX_STEPS * 3,
     // tags / metadata / runName 会被 LangSmith 自动采集；只含非敏感标识
-    ...traceConfig(identity),
+    ...traceConfig(identity, {
+      metadata: { modelMode: runtime.modelMode, storeMode: runtime.storeMode },
+    }),
   };
 
   return {

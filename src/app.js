@@ -1,17 +1,28 @@
+import { config } from "./config.js";
 import { createRuntime, createSession, extractInterrupt } from "./runtime.js";
-import { flushTraces, logTracingStatus } from "./observability.js";
+import { flushTraces, logDataEgress, logTracingStatus } from "./observability.js";
 
 /**
- * 离线演示：不需要 API key、不需要 Docker，把每一条安全防线都跑一遍并打印审计链。
- *   npm run demo:offline
- * 有 key + 已执行 npm run setup 时：
- *   npm run demo
+ * 端到端演示：把每一条安全防线都跑一遍并打印审计链。
+ *   npm run demo:offline  → fake 模型 + 内存存储，零密钥零成本、结果确定性
+ *   npm run demo          → 按 .env 决定；默认「真实 LLM + 内存存储」，无需 Docker
+ *   STORE=postgres npm run demo → 真实 LLM + PostgreSQL/pgvector（需先 npm run setup）
  */
 const forceOffline = process.argv.includes("--offline");
 const runtime = await createRuntime(forceOffline ? { offline: true } : {});
 
-console.log(`\n=== agent-security-lab  |  mode: ${runtime.offline ? "offline (内存 + 假模型)" : "postgresql/pgvector + LLM"} ===`);
+console.log(`\n=== agent-security-lab ===`);
+console.log(`    model     : ${runtime.modelMode === "fake" ? "fake (本地确定性应答)" : config.modelLabel}`);
+console.log(`    store     : ${runtime.storeMode}`);
+console.log(`    embedding : ${runtime.embedder.kind}${runtime.embedder.model ? ` (${runtime.embedder.model})` : ""}`);
 logTracingStatus();
+logDataEgress();
+if (runtime.modelMode === "openai") {
+  console.log("    提示：真实模型是否调用工具由模型决定，场景输出不一定与 fake 一致；");
+  console.log("          安全网关不依赖模型自觉。要确定性复现全部场景请用 --offline。\n");
+} else {
+  console.log("");
+}
 
 // 预置知识库与一条「投毒」文档，用来演示 L2
 await runtime.vectorStore.add({

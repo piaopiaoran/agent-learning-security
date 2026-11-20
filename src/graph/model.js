@@ -4,7 +4,7 @@ import { AIMessage } from "@langchain/core/messages";
 import { config, getSecret } from "../config.js";
 
 /**
- * offline 假模型：规则驱动，用来在没有 API key / 没起数据库时跑通整条安全链路。
+ * fake 模型：规则驱动，用来在没有 API key、或需要确定性结果时跑通整条安全链路。
  * 它故意「不遵守」安全规则（会尝试调高危工具），这样才能验证是网关而不是模型自觉在拦截。
  */
 export function createFakeModel() {
@@ -58,13 +58,28 @@ export function createFakeModel() {
   return model;
 }
 
-/** 真实模型：bindTools 只暴露注册表里的能力，工具执行权不在模型手上 */
+/**
+ * 真实模型：走 OpenAI 兼容 /chat/completions。
+ *
+ * 面试点：换供应商只改 LLM_BASE_URL / LLM_MODEL / LLM_API_KEY 三个环境变量，
+ * L1~L9 的安全防线一行都不用动 —— 因为防线挂在 LangGraph 的节点与边上，
+ * 不依赖某家模型「比较听话」。这也是不能把安全全押在 system prompt 上的实证。
+ *
+ * bindTools 只把注册表里的工具「描述」给模型看；模型返回的是 tool_call 请求，
+ * 不是授权。真正的执行权在 L4 工具网关 + L5 人工审批手里。
+ */
 export function createModel({ offline = false, registry } = {}) {
   if (offline || !config.hasLLM) return createFakeModel();
+
   const llm = new ChatOpenAI({
-    model: config.OPENAI_MODEL,
-    apiKey: getSecret("openai"),
-    temperature: 0,
+    model: config.LLM_MODEL,
+    apiKey: getSecret("llm"),
+    temperature: config.LLM_TEMPERATURE,
+    timeout: config.LLM_TIMEOUT_MS,
+    maxRetries: config.LLM_MAX_RETRIES,
+    // OpenAI SDK 的 ClientOptions：baseURL 决定请求发往哪个供应商
+    configuration: { baseURL: config.LLM_BASE_URL },
   });
-  return llm.bindTools(registry.langchainTools());
+
+  return llm.bindTools(registry?.langchainTools?.() ?? []);
 }

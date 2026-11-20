@@ -22,6 +22,7 @@
 
 ```bash
 npm install
+cp .env.example .env
 ```
 
 ### 模式 A：零外部依赖（推荐先跑，验证安全逻辑本身）
@@ -31,19 +32,38 @@ npm test              # 纯函数 + 图级测试，不需要 API key / 数据库
 npm run demo:offline  # 7 个攻击/正常场景，打印完整审计链
 ```
 
-用内存向量库 + 规则驱动的假模型。**假模型故意会尝试调用高危工具**，用来证明拦住它的是网关、不是模型自觉。
+用内存向量库 + 规则驱动的假模型。**假模型故意会尝试调用高危工具**，用来证明拦住它的是网关、不是模型自觉。`--offline` 会强制覆盖 `.env` 里的模型与存储配置。
 
-### 模式 B：真实 PostgreSQL + pgvector + LLM
+### 模式 B：真实 LLM + 内存存储（无需 Docker，默认）
 
-```bash
-cp .env.example .env      # 填 OPENAI_API_KEY
-npm run setup             # docker compose up -d + 建表/RLS/审计规则 + checkpoint 表
-npm run demo
+`.env` 里设置（DeepSeek 示例，换供应商见第 10 节）：
+
+```ini
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_API_KEY=<你的 key>
+LLM_MODEL=deepseek-flash
+STORE=memory
 ```
 
-`docker-compose.yml` 用 `pgvector/pgvector:pg16`，初始化时自动执行 `sql/001_init.sql`；`npm run setup` 再幂等跑一次迁移并调用官方 `PostgresSaver.setup()`。
+```bash
+npm run check:llm     # 一次最小调用：连通性 + function calling + usage 统计
+npm run demo          # 7 个场景走真实模型，安全链路一行不改
+npm run server        # HTTP 服务同样可用
+```
 
-### 模式 C：HTTP 服务（含人工审批接口）
+`STORE=memory` 时向量库、checkpointer、审计都在内存，所以**没有 PostgreSQL 也能跑真实模型**；这也是本机（未装 Docker）默认可跑的模式。
+
+### 模式 C：真实 LLM + PostgreSQL / pgvector
+
+```bash
+npm run setup             # docker compose up -d + 建表/RLS/审计规则 + checkpoint 表
+STORE=postgres npm run demo
+```
+
+`docker-compose.yml` 用 `pgvector/pgvector:pg16`，初始化时自动执行 `sql/001_init.sql`；`npm run setup` 再幂等跑一次迁移并调用官方 `PostgresSaver.setup()`。要用真语义检索，另配 `EMBEDDING_*`（见第 10 节）。
+
+### 模式 D：HTTP 服务（含人工审批接口）
 
 ```bash
 npm run server
@@ -61,7 +81,7 @@ curl -s -X POST localhost:3000/approve \
 
 `/approve` 强制**职责分离**：审批人必须是 admin 且不能是发起人。
 
-> ⚠️ 本机当前未安装 Docker，因此模式 B/C 的数据库路径**未做容器实测**；离线模式与全部测试已跑通。SQL 与 `PostgresSaver` 用法按官方 README 编写，起容器后可直接验证。
+> ⚠️ 本机未安装 Docker，因此模式 C 的 PostgreSQL 路径**未做容器实测**；模式 A/B、全部测试及真实 DeepSeek 调用已实测。SQL 与 `PostgresSaver` 用法按官方 README 编写，起容器后可直接验证。
 
 ---
 
@@ -84,11 +104,12 @@ curl -s -X POST localhost:3000/approve \
 │   │   └── audit.js              # L9 append-only 审计
 │   ├── memory/                   # pgvector 写入隔离 + 检索二次扫描
 │   ├── tools/                    # 能力清单（唯一 allowlist）+ 受控执行器
-│   ├── graph/                    # State / Nodes / 图编译 / 假模型
+│   ├── graph/                    # State / Nodes / 图编译 / fake + OpenAI 兼容模型
 │   ├── runtime.js                # 依赖组装、会话、中断恢复
 │   ├── observability.js          # LangSmith 状态自检 / trace metadata / flush
 │   ├── app.js / server.js        # CLI 演示 / HTTP 入口
-└── test/                         # 31 个用例：单测 + 图级 + 可观测性
+│   ├── checkLlm.js               # 供应商连通性 / function calling 自检
+└── test/                         # 40 个用例：单测 + 图级 + 可观测性 + LLM 接入
 ```
 
 ---
@@ -175,6 +196,10 @@ START
 | 限流放哪 | 单进程内存滑窗（演示） | 多副本必须换 Redis，否则每副本各算各的；且要限「图执行次数」而非 HTTP QPS |
 | 图按会话编译 | 每会话 `buildGraph` 一次 | 图编译是纯内存微秒级；换来 auditor/identity 用闭包注入，不必塞进 configurable。生产可缓存图 + AsyncLocalStorage 注入 per-request 依赖 |
 | 测试策略 | 假模型**故意不守规矩** | 安全测试不能依赖 LLM 的随机配合；把安全层做成纯函数 + 可注入依赖，才能稳定回归 |
+| 模型供应商耦合 | 只认 OpenAI 兼容协议 | DeepSeek / 硅基流动 / OpenAI / vLLM 换 3 个环境变量即可，防线挂在图节点上、不依赖某家模型「听话」。代价：接入前必须验证对方实现 function calling 与 usage 统计（`npm run check:llm`） |
+| LLM 与 embedding 凭据 | **两把 key、两个端点** | DeepSeek 的 `/embeddings` 实测 404；共用一个 key 既会崩、又扩大凭据暴露面。未配专用 embedding 就降级 local-hash（链路可跑，但无语义能力） |
+| 模型模式 vs 存储模式 | **两个正交开关** | 「真实 LLM + 内存存储」让无 Docker 环境也能演示完整链路；旧版把两者绑成一个 `offline`，填了 key 没起数据库就崩 |
+| 第三方端点校验 | 强制 HTTPS + 禁 URL 内嵌凭据 | `LLM_BASE_URL` 决定 API key 发给谁，属于可信边界；明文 http 或 `?key=...` 直接启动失败，而不是运行时才发现外泄 |
 
 ---
 
@@ -210,6 +235,12 @@ A：把命中的具体规则告诉攻击者，等于把检测器变成 oracle，
 **Q：输出也要检查？**
 A：要。出口要拦凭据/PII 泄漏、系统提示泄漏，以及**幻觉式的「已为你完成退款」**——在金融 Agent 里，模型口头声称成功会直接导致用户误判。本项目要求存在真实 `toolsExecuted` 记录才允许这类措辞。
 
+**Q：换成 DeepSeek / 自托管模型，安全层要改吗？**
+A：不用。防线在 LangGraph 的节点和边上，模型只负责产出候选 tool_call 与文本。唯一硬依赖是供应商要实现 OpenAI 兼容的 function calling 和 usage 统计，所以接入前先跑 `npm run check:llm`。这也反证了「把安全全写进 system prompt」的脆弱——换模型，提示词服从度就变了，网关不会。
+
+**Q：接入第三方 LLM 后多了哪些攻击面 / 合规面？**
+A：至少三个：① **新的数据出口**——prompt、检索上下文、工具描述发到供应商，要做数据分级与脱敏，本项目启动时用 `logDataEgress()` 显式声明流向；② **端点本身要校验**——明文 http 或被篡改的 baseURL 会直接偷走 API key，所以启动期强制 HTTPS 且禁止 URL 夹带凭据；③ **供应商私有字段会进 checkpoint**（如 DeepSeek 的 `reasoning_content`），长期存储前要评估。LangSmith tracing 是第二个数据出口，别把两者混为一谈。
+
 ---
 
 ## 8. 已知局限 / 生产化清单
@@ -238,26 +269,68 @@ LangChain.js / LangGraph 的 Runnable 会**自动读取环境变量**，不需�
 | `LANGSMITH_PROJECT` | 项目名 | `agent-security-lab` |
 | `LANGSMITH_ENDPOINT` | 区域端点 | `https://api.smith.langchain.com` |
 
-本地 `.env` 已开启。填入 `OPENAI_API_KEY` 后跑 `npm run demo`，能在 LangSmith 看到 graph → 节点 → LLM → 工具 的完整 span；只有假模型时只记录图级 run。
+本地 `.env` 已开启。`LLM_PROVIDER=openai` 且填入 `LLM_API_KEY` 后跑 `npm run demo`，能在 LangSmith 看到 graph → 节点 → LLM → 工具 的完整 span；fake 模型只记录图级 run。
 
 **三个安全约束**（这本身就是面试考点）：
 
-1. **密钥不进 config 对象**。`config.js` 把 `OPENAI_API_KEY` / `LANGSMITH_API_KEY` 从导出的对象里剥离，只在真正发请求时通过 `getSecret(name)` 白名单取用——防止 `console.log(config)`、错误堆栈或 trace metadata 整体带出密钥。`test/observability.test.js` 有回归断言。
-2. **trace metadata 最小披露**。`traceConfig()` 只挂 `traceId / sessionId / tenantId / role / offline`，绝不挂用户输入、工具参数、系统提示，连 `userId` 都不给第三方。其中 `traceId` 与 `audit_events.trace_id` 一致，可在 LangSmith 与审计表之间双向定位。
-3. **开启追踪 = 新增一个数据出口**。prompt、工具参数、模型输出会被发送到第三方。本项目已在入模前做 PII 脱敏，但生产仍需评估数据出境合规；金融/医疗场景应改自托管 LangSmith 或关闭内容采集。
+1. **密钥不进 config 对象**。`config.js` 把 `LLM_API_KEY` / `EMBEDDING_API_KEY` / `LANGSMITH_API_KEY` 从导出的对象里剥离，只在真正发请求时通过 `getSecret(name)` 白名单取用——防止 `console.log(config)`、错误堆栈或 trace metadata 整体带出密钥。`test/observability.test.js` 与 `test/llm.test.js` 都有回归断言。
+2. **trace metadata 最小披露**。`traceConfig()` 只挂 `traceId / sessionId / tenantId / role / modelProvider / modelMode / storeMode`，绝不挂用户输入、工具参数、系统提示，连 `userId` 都不给第三方。其中 `traceId` 与 `audit_events.trace_id` 一致，可在 LangSmith 与审计表之间双向定位。
+3. **开启追踪 = 再加一个数据出口**（模型供应商已经是第一个）。prompt、工具参数、模型输出会被发送到第三方。本项目已在入模前做 PII 脱敏，但生产仍需评估数据出境合规；金融/医疗场景应改自托管 LangSmith 或关闭内容采集。
 
-短命 CLI 进程退出前用 `awaitAllCallbacks()`（`flushTraces()`）等待后台 trace 提交完成，否则会丢最后几条 span。`npm test` 显式设 `LANGSMITH_TRACING=false`，保证单测**不产生任何外部网络副作用**。
+短命 CLI 进程退出前用 `awaitAllCallbacks()`（`flushTraces()`）等待后台 trace 提交完成，否则会丢最后几条 span。`npm test` 显式设 `LANGSMITH_TRACING=false LLM_PROVIDER=fake`，保证单测**不产生任何外部网络副作用**。
 
 > **和 L9 审计的分工**：LangSmith 看「执行链路与性能」，可采样、可丢弃、由第三方保存；`audit_events` 看「安全决策与取证」，append-only、禁改禁删、留在自己的数据库。两者不能互相替代。
 
 ---
 
-## 10. 验证状态
+## 10. 接入真实 LLM（供应商可替换）
 
-- `npm test`：**31 个用例全绿**（19 个纯函数 + 8 个图级端到端 + 4 个可观测性约束）。
+模型层只依赖 OpenAI 兼容协议，**换供应商不改任何安全代码**。
+
+| 变量 | 作用 | 默认 / 说明 |
+|---|---|---|
+| `LLM_PROVIDER` | `fake` \| `openai` | `fake`（零密钥零成本，确定性） |
+| `LLM_BASE_URL` | `/chat/completions` 基址，**必须 HTTPS** | `https://api.openai.com/v1` |
+| `LLM_API_KEY` | 模型密钥，只放 `.env`，不进 config 对象 | 空 |
+| `LLM_MODEL` | 模型名 | `gpt-4o-mini` |
+| `LLM_TEMPERATURE` | 采样温度 | `0.2` |
+| `LLM_TIMEOUT_MS` | 单次调用超时 | `20000` |
+| `LLM_MAX_RETRIES` | SDK 重试上限（防错误请求放大成本） | `2` |
+| `STORE` | `memory` \| `postgres` | `memory`，与模型模式正交 |
+| `EMBEDDING_*` | 独立的 embedding key / 端点 / 模型 | 留空 → 降级 `local-hash` |
+
+换供应商只改 3 行：
+
+```ini
+# DeepSeek
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-flash
+LLM_API_KEY=<key>
+
+# 硅基流动：https://api.siliconflow.cn/v1 + 平台模型名
+# OpenAI：   https://api.openai.com/v1    + gpt-4o-mini
+# 本地 vLLM：http://localhost:8000/v1    + 本地模型名（仅本机允许 http）
+```
+
+**实测记录（2026-11-21，DeepSeek `deepseek-flash` / DeepSeek-V4.1-Flash）**：`/models` 与 `/chat/completions` 均返回 200；`ChatOpenAI` 经 `configuration.baseURL` 打通；`bindTools` 返回标准 `tool_calls`（`get_order_status`，`args.orderId=ORD-1001`）与 `usage_metadata.total_tokens`；**`/embeddings` 返回 404**，因此必须走独立 embedding 服务或本地降级。
+
+三个容易被忽略的点：
+
+1. **凭据隔离**：LLM key 绝不复用给 embedding 端点，反之亦然。两把 key、两个 host，泄漏面减半。
+2. **降级要可见**：`local-hash` 只是词哈希，没有语义能力。启动时打印 `embedding: local-hash`，避免「以为在做语义检索，其实在做关键词碰撞」。
+3. **能力先验**：不是所有兼容端点都实现 function calling / usage 统计。`npm run check:llm` 用一次最小调用把这两项验掉，再跑 demo。
+
+> 接入真实模型后，安全链路的**行为会变**（模型可能拒绝调工具、可能直接回答），但**防线不会变**：L1 拦截仍在模型之前，L4 授权仍不信任 tool_call，L5 审批仍由人决定。要确定性复现 7 个场景请用 `--offline`。
+
+---
+
+## 11. 验证状态
+
+- `npm test`：**40 个用例全绿**（19 纯函数 + 8 图级端到端 + 4 可观测性 + 9 LLM 接入约束）。
 - `npm run demo:offline`：7 条链路全部跑通，含注入拒绝、Unicode 混淆、RBAC、批准/驳回 HITL、记忆投毒隔离、PII 脱敏。
-- 数据库路径需要 Docker；本机未安装，故未做容器实测。
+- `npm run check:llm` / `npm run demo`（真实 DeepSeek）：连通性、function calling、完整图链路已实测。
+- PostgreSQL / pgvector 路径需要 Docker；本机未安装，故未做容器实测。
 
 ```bash
-npm test && npm run demo:offline
+npm test && npm run demo:offline && npm run check:llm
 ```

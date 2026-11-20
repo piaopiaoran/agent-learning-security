@@ -8,8 +8,27 @@ import { z } from "zod";
  */
 const schema = z.object({
   DATABASE_URL: z.string().default("postgresql://postgres:postgres@localhost:5432/agent_sec"),
-  OPENAI_API_KEY: z.string().optional().default(""),
-  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
+
+  // 存储与模型是两个正交开关：真实 LLM 可以配内存存储（无 Docker 也能跑），
+  // 假模型也可以配 PostgreSQL（只测持久化层）。旧版把它们绑在一个 offline 上，
+  // 导致「填了 LLM key 但没起数据库」时 demo 直接崩。
+  STORE: z.enum(["memory", "postgres"]).default("memory"),
+
+  // ---- LLM：OpenAI 兼容协议（DeepSeek / 硅基流动 / OpenAI / 本地 vLLM 通用）----
+  LLM_PROVIDER: z.enum(["fake", "openai"]).default("fake"),
+  LLM_BASE_URL: z.string().default("https://api.openai.com/v1"),
+  LLM_API_KEY: z.string().optional().default(""),
+  LLM_MODEL: z.string().default("gpt-4o-mini"),
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
+  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
+  LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+
+  // ---- Embedding：必须与 LLM 凭据隔离 ----
+  // DeepSeek / 硅基流动的 chat 端点不提供 /embeddings（实测 404）。
+  // 这里留空即降级为本地确定性向量；要真语义检索请单独配一个 embedding 服务。
+  // 绝不把 LLM_API_KEY 复用到 embedding 端点：凭据最小化，也避免误发给第二个供应商。
+  EMBEDDING_API_KEY: z.string().optional().default(""),
+  EMBEDDING_BASE_URL: z.string().default(""),
   EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
 
   // LangSmith 只把「开关 / 项目名 / 端点」当配置，密钥单独隔离
@@ -29,6 +48,28 @@ const schema = z.object({
   ALLOWED_HTTP_HOSTS: z.string().default(""),
 });
 
+/**
+ * 第三方模型端点是新的可信边界：密钥会随每个请求发给它。
+ * 因此禁止明文 http（本机调试除外）、禁止把凭据/查询串塞进 URL。
+ * 只返回 origin 用于日志，避免 path 上可能携带的信息被打印。
+ */
+export function assertSafeEndpoint(raw, label = "endpoint") {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`[config] ${label} 不是合法 URL`);
+  }
+  const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !(local && u.protocol === "http:")) {
+    throw new Error(`[config] ${label} 必须使用 HTTPS（仅本机可 http），当前为 ${u.protocol}`);
+  }
+  if (u.username || u.password || u.search || u.hash) {
+    throw new Error(`[config] ${label} 不允许在 URL 中夹带凭据或查询串`);
+  }
+  return u.origin;
+}
+
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   // 启动即失败，避免带着错误阈值上线
@@ -40,15 +81,37 @@ const env = parsed.data;
 
 // 密钥不进入 config 对象：防止 console.log(config)、错误堆栈、trace metadata
 // 或任何「整体展开配置」的地方把 key 带出去。observability.test.js 会守着这条约束。
-const { OPENAI_API_KEY, LANGSMITH_API_KEY, ...publicEnv } = env;
+const { LLM_API_KEY, EMBEDDING_API_KEY, LANGSMITH_API_KEY, ...publicEnv } = env;
+
+const useOpenAI = env.LLM_PROVIDER === "openai";
+if (useOpenAI && !LLM_API_KEY) {
+  // fail-closed：声明要用真实模型却没 key 时，绝不静默退化成 fake，
+  // 否则会让人误以为自己在测真实链路。
+  throw new Error("[config] LLM_PROVIDER=openai 但 LLM_API_KEY 为空；零成本演示请设 LLM_PROVIDER=fake");
+}
+
+const llmEndpoint = useOpenAI
+  ? assertSafeEndpoint(env.LLM_BASE_URL, "LLM_BASE_URL")
+  : "local";
+const embeddingEndpoint = EMBEDDING_API_KEY && env.EMBEDDING_BASE_URL
+  ? assertSafeEndpoint(env.EMBEDDING_BASE_URL, "EMBEDDING_BASE_URL")
+  : "";
 
 export const config = Object.freeze({
   ...publicEnv,
-  EMBED_DIM: 1536,
+  EMBED_DIM: 1536, // 与 sql/001_init.sql 的 vector(1536) 必须一致
   allowedHosts: new Set(
     publicEnv.ALLOWED_HTTP_HOSTS.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
   ),
-  hasLLM: OPENAI_API_KEY.length > 0,
+  hasLLM: useOpenAI && LLM_API_KEY.length > 0,
+  modelMode: useOpenAI ? "openai" : "fake",
+  storeMode: env.STORE,
+  embeddingMode: EMBEDDING_API_KEY ? "remote" : "local-hash",
+  llmEndpoint,
+  embeddingEndpoint,
+  modelLabel: useOpenAI
+    ? `${env.LLM_MODEL} @ ${llmEndpoint}`
+    : "fake (本地确定性应答，零密钥零成本)",
   langsmith: Object.freeze({
     enabled: env.LANGSMITH_TRACING === "true" && LANGSMITH_API_KEY.length > 0,
     project: env.LANGSMITH_PROJECT,
@@ -59,7 +122,10 @@ export const config = Object.freeze({
 /** 只在真正要发请求的模块里按需取用；返回值不要写进日志或 metadata */
 export function getSecret(name) {
   switch (name) {
-    case "openai": return OPENAI_API_KEY;
+    case "llm":
+    case "openai": // 向后兼容别名
+      return LLM_API_KEY;
+    case "embedding": return EMBEDDING_API_KEY;
     case "langsmith": return LANGSMITH_API_KEY;
     default: throw new Error(`unknown secret: ${name}`);
   }
