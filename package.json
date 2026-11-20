@@ -1,0 +1,28 @@
+{
+  "name": "agent-security-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LangChain + LangGraph + PostgreSQL/pgvector Agent 项目，带完整可测试的安全策略层（面试学习用）",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "docker compose up -d && node src/db/migrate.js",
+    "migrate": "node src/db/migrate.js",
+    "demo": "node src/app.js",
+    "demo:offline": "node src/app.js --offline",
+    "server": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.4.2",
+    "@langchain/langgraph": "^1.7.5",
+    "@langchain/langgraph-checkpoint-postgres": "^1.1.4",
+    "@langchain/openai": "^1.8.4",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  }
+}
