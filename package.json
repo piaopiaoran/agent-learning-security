@@ -14,6 +14,7 @@
     "demo:offline": "node src/app.js --offline",
     "check:llm": "node src/checkLlm.js",
     "server": "node src/server.js",
+    "web": "node src/server.js",
     "test": "LANGSMITH_TRACING=false LLM_PROVIDER=fake node --test test/*.test.js"
   },
   "dependencies": {

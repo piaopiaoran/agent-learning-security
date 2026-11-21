@@ -63,10 +63,18 @@ STORE=postgres npm run demo
 
 `docker-compose.yml` 用 `pgvector/pgvector:pg16`，初始化时自动执行 `sql/001_init.sql`；`npm run setup` 再幂等跑一次迁移并调用官方 `PostgresSaver.setup()`。要用真语义检索，另配 `EMBEDDING_*`（见第 10 节）。
 
-### 模式 D：HTTP 服务（含人工审批接口）
+### 模式 D：前端安全控制台（推荐演示）
 
 ```bash
-npm run server
+npm run web       # 等价于 npm run server
+# 浏览器打开 http://localhost:3000/
+```
+
+纯静态页面，零新增依赖、零构建，由现有 Express 直接托管。左侧切换身份与 7 个预设攻击场景，中间是对话与人工审批，右侧实时显示 L0~L9 防线地图、资源预算与审计时间线。详见第 11 节。
+
+HTTP 接口仍可直接调用：
+
+```bash
 curl -s -X POST localhost:3000/chat \
   -H 'content-type: application/json' \
   -H 'x-tenant-id: tenant-a' -H 'x-user-id: u-1' \
@@ -107,9 +115,10 @@ curl -s -X POST localhost:3000/approve \
 │   ├── graph/                    # State / Nodes / 图编译 / fake + OpenAI 兼容模型
 │   ├── runtime.js                # 依赖组装、会话、中断恢复
 │   ├── observability.js          # LangSmith 状态自检 / trace metadata / flush
-│   ├── app.js / server.js        # CLI 演示 / HTTP 入口
+│   ├── app.js / server.js        # CLI 演示 / HTTP 入口（server 同时托管前端）
 │   ├── checkLlm.js               # 供应商连通性 / function calling 自检
-└── test/                         # 40 个用例：单测 + 图级 + 可观测性 + LLM 接入
+├── public/                       # 安全控制台：index.html / styles.css / app.js
+└── test/                         # 47 个用例：单测 + 图级 + 可观测性 + LLM + Web
 ```
 
 ---
@@ -324,13 +333,40 @@ LLM_API_KEY=<key>
 
 ---
 
-## 11. 验证状态
+## 11. 前端安全控制台
 
-- `npm test`：**40 个用例全绿**（19 纯函数 + 8 图级端到端 + 4 可观测性 + 9 LLM 接入约束）。
+`npm run web` 后打开 `http://localhost:3000/`。页面是 `public/` 下的原生 HTML / CSS / ESM JS，**无框架、无构建、零新增依赖**，由现有 Express 直接托管。
+
+| 区域 | 展示什么 | 对应考点 |
+|---|---|---|
+| 身份栏 | tenantId / userId / role 可切换 | 把「信任客户端 header」这条演示用越权风险摆到台面上 |
+| 预设场景 | 7 个：正常查询、直接注入、Unicode 混淆、越权导出、退款审批、PII 脱敏、admin 对照 | 点击即发送，每轮独立 trace |
+| 对话区 | 用户/助手气泡按 verdict 变色；审批待办面板 | L5 HITL：批准 / 驳回 + 审批人 + 理由 |
+| 防线地图 | L0~L9 十格，按本轮审计事件染色 | 一眼看出「拦在哪一层、后面的层根本没执行」 |
+| 拦截提示 | 例：`拦截于 L1 · 模型调用 0 次` | 入口拒绝省钱，也不给攻击者试探机会 |
+| 资源预算 | 步数 / tokens / 工具执行次数 / 重复计数 | L7 循环与成本 DoS |
+| 审计时间线 | 每次决策的 node / event / decision / flags / detail（可展开），点击轮次回看 | L9 append-only 事件流 |
+| 数据出口 | LLM 端点、LangSmith 开关、embedding 模式 | 明确 prompt 会发到哪些第三方 |
+
+**前端本身也是一条出口防线**（面试里最容易漏答）：模型输出、工具参数、审计 detail 全是不可信数据，若前端用 `innerHTML` 拼接，L1~L8 挡住的注入会在浏览器里被重新执行一遍。所以：
+
+1. 所有动态文本走 `createElement` + `textContent`，代码里没有 `innerHTML` / `eval` / 内联事件处理器；
+2. 服务端下发 CSP（`default-src 'self'; script-src 'self'; connect-src 'self'; ...`）+ `X-Content-Type-Options: nosniff`，禁内联脚本与外域资源；
+3. `test/web.test.js` 有静态回归断言，防止后来有人图省事改回危险 API。
+
+> 生产还应在 CSP 里加 `frame-ancestors` 与 `X-Frame-Options` 防点击劫持；本项目为兼容内嵌预览面板暂未设置。`/chat` 的 `sessions` Map 已加容量上限，避免被刷成内存泄漏，但多副本仍需换 Redis + TTL。
+
+---
+
+## 12. 验证状态
+
+- `npm test`：**47 个用例全绿**（19 纯函数 + 8 图级端到端 + 4 可观测性 + 9 LLM 接入 + 7 Web）。
 - `npm run demo:offline`：7 条链路全部跑通，含注入拒绝、Unicode 混淆、RBAC、批准/驳回 HITL、记忆投毒隔离、PII 脱敏。
 - `npm run check:llm` / `npm run demo`（真实 DeepSeek）：连通性、function calling、完整图链路已实测。
+- `npm run web`：静态资源、CSP、`/health`、注入拒绝、HITL 审批与前端 XSS 约束均有自动化用例覆盖。
 - PostgreSQL / pgvector 路径需要 Docker；本机未安装，故未做容器实测。
 
 ```bash
 npm test && npm run demo:offline && npm run check:llm
+# 前端：npm run web，然后打开 http://localhost:3000/
 ```

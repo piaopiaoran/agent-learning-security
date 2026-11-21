@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>agent-security-lab · 安全控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">AS</span>
+      <div>
+        <h1>agent-security-lab</h1>
+        <p>Agent 安全策略可视化控制台</p>
+      </div>
+    </div>
+    <div class="runtime" id="runtime"></div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel side">
+      <section class="block">
+        <h2>身份（演示用）</h2>
+        <label class="field-label" for="tenantId">租户 tenantId</label>
+        <input class="input" id="tenantId" value="tenant-a" autocomplete="off">
+        <label class="field-label" for="userId">用户 userId</label>
+        <input class="input" id="userId" value="u-1" autocomplete="off">
+        <label class="field-label" for="role">角色 role</label>
+        <select class="input" id="role">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+        <p class="warning">演示用：身份来自请求头 x-tenant-id / x-role，可随意切换。生产环境必须由服务端会话（JWT / OIDC）注入，否则一行 header 就能完成越权。</p>
+      </section>
+
+      <section class="block">
+        <h2>预设场景（点击即发送）</h2>
+        <div id="scenarios"></div>
+      </section>
+
+      <section class="block">
+        <h2>能力清单 allowlist</h2>
+        <div class="tools" id="tools"></div>
+        <p class="hint-block">模型只能看见这些工具；返回 tool_call 只是请求，授权由 L4 网关决定。</p>
+      </section>
+    </aside>
+
+    <section class="panel chat">
+      <div class="chat-head">
+        <h2>对话与人工审批</h2>
+        <span class="hint">每次发送 = 独立 trace</span>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div class="approval" id="approval" hidden></div>
+      <div class="composer">
+        <textarea id="input" rows="3" placeholder="输入请求，或从左侧选择一个攻击场景…"></textarea>
+        <div class="composer-row">
+          <span class="status" id="status"></span>
+          <button class="btn primary" id="send">发送</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel inspect">
+      <div class="chat-head">
+        <h2>防线地图</h2>
+        <span class="hint" id="interceptHint"></span>
+      </div>
+      <div class="layers" id="layers"></div>
+      <div class="egress" id="egress"></div>
+
+      <div class="chat-head">
+        <h2>资源预算</h2>
+        <span class="hint">L7</span>
+      </div>
+      <div class="budget" id="budget"></div>
+
+      <div class="chat-head">
+        <h2>审计时间线</h2>
+        <span class="hint">点击轮次回看链路</span>
+      </div>
+      <div class="audit" id="audit"></div>
+    </aside>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
