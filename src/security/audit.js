@@ -1,4 +1,5 @@
 import { redact } from "./pii.js";
+import { T } from "../db/tables.js";
 
 const MAX_DEPTH = 5;
 const MAX_STR = 1000;
@@ -16,7 +17,7 @@ function scrub(value, depth = 0) {
 
 /**
  * L9 审计：每次「决策」都留痕，而不是只记最终答案。
- * mode: "db" → 写 audit_events（append-only 表）；"memory" → 内存，供单测断言；"noop"
+ * mode: "db" → 写 T.auditEvents（append-only 表）；"memory" → 内存，供单测断言；"noop"
  * strict: true → 写库失败时中断请求（金融/合规场景的 fail-closed）；默认 false（可用性优先 + 告警）
  */
 export function createAuditor({ pool = null, base = {}, mode = null, strict = false } = {}) {
@@ -41,7 +42,7 @@ export function createAuditor({ pool = null, base = {}, mode = null, strict = fa
     if (resolvedMode !== "db") return row;
     try {
       await pool.query(
-        `INSERT INTO audit_events
+        `INSERT INTO ${T.auditEvents}
            (trace_id, session_id, tenant_id, user_id, node, event, decision, risk_flags, detail)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [

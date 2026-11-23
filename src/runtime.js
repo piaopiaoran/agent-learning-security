@@ -3,6 +3,7 @@ import { Command, MemorySaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { config } from "./config.js";
 import { createPool } from "./db/pool.js";
+import { T, checkpointOptions } from "./db/tables.js";
 import { createEmbedder } from "./memory/embedder.js";
 import { createMemoryVectorStore, createPgVectorStore } from "./memory/vectorStore.js";
 import { createRegistry } from "./tools/registry.js";
@@ -20,7 +21,7 @@ function createApprovalStore({ pool }) {
       records.push(r);
       if (!pool) return;
       await pool.query(
-        `INSERT INTO approval_records
+        `INSERT INTO ${T.approvalRecords}
            (trace_id, session_id, tenant_id, approver_id, tool_name, tool_args, decision, reason)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [r.traceId, r.sessionId, r.tenantId, r.approverId, r.toolName,
@@ -38,7 +39,7 @@ function createApprovalStore({ pool }) {
  *   storeMode: memory|postgres —— 用不用 PostgreSQL / pgvector / DB 审计
  *
  * 因此支持四种组合，最实用的是「openai + memory」：
- * 有真实模型、有完整安全链路，但不需要 Docker，适合面试现场演示与调试。
+ * 有真实模型、有完整安全链路，但不依赖数据库服务，适合面试现场演示与调试。
  * --offline 仍等价于强制 fake + memory（零密钥、零外部网络）。
  */
 export async function createRuntime({ offline, model, store } = {}) {
@@ -56,7 +57,8 @@ export async function createRuntime({ offline, model, store } = {}) {
 
   let checkpointer;
   if (usePg) {
-    checkpointer = new PostgresSaver(pool);
+    // 表名硬编码的四张 checkpoint 表放独立 schema，避免与共享库其他项目撞名
+    checkpointer = new PostgresSaver(pool, undefined, checkpointOptions);
     await checkpointer.setup();
   } else {
     checkpointer = new MemorySaver();

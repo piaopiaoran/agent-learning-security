@@ -1,9 +1,11 @@
 import pg from "pg";
-import { config } from "../config.js";
+import { config, assertSharedDatabase } from "../config.js";
 
 const { Pool } = pg;
 
 export function createPool(connectionString = config.DATABASE_URL) {
+  // 只连共享的本地 5432 / postgres 库，任何偏离都在建连前直接失败
+  assertSharedDatabase(connectionString);
   const pool = new Pool({
     connectionString,
     max: 10,
@@ -15,7 +17,7 @@ export function createPool(connectionString = config.DATABASE_URL) {
 }
 
 /**
- * 租户上下文：用 SET LOCAL 把 tenant_id 绑在事务里，配合 memory_chunks 的 RLS。
+ * 租户上下文：用 SET LOCAL 把 tenant_id 绑在事务里，配合 T.memoryChunks 的 RLS。
  * 面试点：
  *  - 为什么不用字符串拼 WHERE tenant_id？→ 一处漏写就是横向越权；RLS 是 DB 层兜底。
  *  - 为什么 SET LOCAL 而不是 SET？→ 连接归还池后不会残留上一个租户的身份。

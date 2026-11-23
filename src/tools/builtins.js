@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RISK } from "../security/constants.js";
+import { T } from "../db/tables.js";
 
 /**
  * 示例工具集。关键安全约定：
@@ -35,7 +36,7 @@ export const builtinTools = [
     async execute({ orderId }, ctx) {
       if (!ctx.pool) return "[offline demo] 订单 ORD-1001: 已支付 ¥129.00";
       const r = await ctx.pool.query(
-        "SELECT id, amount_cents, status FROM orders WHERE id=$1 AND tenant_id=$2 AND user_id=$3",
+        `SELECT id, amount_cents, status FROM ${T.orders} WHERE id=$1 AND tenant_id=$2 AND user_id=$3`,
         [orderId, ctx.tenantId, ctx.userId]
       );
       if (!r.rows.length) return "未找到该订单（或不属于当前用户）。";
@@ -57,7 +58,7 @@ export const builtinTools = [
     timeoutMs: 3000,
     async execute({ orderId, reason }, ctx) {
       // 真实系统这里应调用财务服务；本项目只返回意图已登记，避免 demo 产生真实副作用。
-      // 「已批准」这件事由 approval_records + audit_events 记录，不靠工具自己声明。
+      // 「已批准」这件事由 T.approvalRecords + T.auditEvents 记录，不靠工具自己声明。
       return `已登记退款申请（订单 ${orderId}，原因：${reason}，trace=${ctx.traceId}）；实际资金动作需财务系统执行。`;
     },
   },

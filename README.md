@@ -1,6 +1,6 @@
 # agent-security-lab
 
-> 面向「Agent 安全」面试的学习型项目：**LangChain.js + LangGraph 1.x + PostgreSQL 16 / pgvector**
+> 面向「Agent 安全」面试的学习型项目：**LangChain.js + LangGraph 1.x + 共享 PGlite（PostgreSQL 18.7 / pgvector 0.8.7）**
 > 全 JS / ESM。目标不是做一个能聊天的机器人，而是把 **每一条安全防线都能指到代码、能单独单测、能在面试里讲清取舍**。
 
 ---
@@ -34,7 +34,7 @@ npm run demo:offline  # 7 个攻击/正常场景，打印完整审计链
 
 用内存向量库 + 规则驱动的假模型。**假模型故意会尝试调用高危工具**，用来证明拦住它的是网关、不是模型自觉。`--offline` 会强制覆盖 `.env` 里的模型与存储配置。
 
-### 模式 B：真实 LLM + 内存存储（无需 Docker，默认）
+### 模式 B：真实 LLM + 内存存储（不依赖数据库服务）
 
 `.env` 里设置（DeepSeek 示例，换供应商见第 10 节）：
 
@@ -52,16 +52,24 @@ npm run demo          # 7 个场景走真实模型，安全链路一行不改
 npm run server        # HTTP 服务同样可用
 ```
 
-`STORE=memory` 时向量库、checkpointer、审计都在内存，所以**没有 PostgreSQL 也能跑真实模型**；这也是本机（未装 Docker）默认可跑的模式。
+`STORE=memory` 时向量库、checkpointer、审计都在内存，所以**没有数据库服务也能跑真实模型**；这也是共享 PGlite 未监听时的兜底模式。
 
-### 模式 C：真实 LLM + PostgreSQL / pgvector
+### 模式 C：真实 LLM + 共享 PGlite（PostgreSQL / pgvector）—— 当前 `.env` 默认
 
-```bash
-npm run setup             # docker compose up -d + 建表/RLS/审计规则 + checkpoint 表
-STORE=postgres npm run demo
+数据库是**本机已有的共享服务**，不需要（也不允许）安装 PostgreSQL / Docker 或另起端口：
+
+```ini
+DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres
+STORE=postgres
 ```
 
-`docker-compose.yml` 用 `pgvector/pgvector:pg16`，初始化时自动执行 `sql/001_init.sql`；`npm run setup` 再幂等跑一次迁移并调用官方 `PostgresSaver.setup()`。要用真语义检索，另配 `EMBEDDING_*`（见第 10 节）。
+```bash
+npm run check:db   # 只读诊断：连通性 / pgvector 版本 / 本项目表是否已建
+npm run migrate    # 幂等建表：4 张业务表 + RLS + 审计规则 + checkpoint schema
+npm run demo       # 真实模型 + PostgreSQL/pgvector + DB 审计
+```
+
+所有表带 `agent-security-lab_` 前缀，LangGraph checkpoint 放独立 schema `"agent-security-lab"`，与同库其他项目零冲突；命名约定见第 13 节。要用真语义检索，另配 `EMBEDDING_*`（见第 10 节）。
 
 ### 模式 D：前端安全控制台（推荐演示）
 
@@ -89,17 +97,17 @@ curl -s -X POST localhost:3000/approve \
 
 `/approve` 强制**职责分离**：审批人必须是 admin 且不能是发起人。
 
-> ⚠️ 本机未安装 Docker，因此模式 C 的 PostgreSQL 路径**未做容器实测**；模式 A/B、全部测试及真实 DeepSeek 调用已实测。SQL 与 `PostgresSaver` 用法按官方 README 编写，起容器后可直接验证。
+> ℹ️ 数据库服务由共享的 `db:local` 提供（127.0.0.1:5432），本项目只连接、不启动或重启它、不新开端口。若服务未监听，`npm run check:db` 会明确报错，此时把 `STORE` 改回 `memory` 即可完整演示；实测状态见第 12 节。
 
 ---
 
 ## 2. 目录结构
 
 ```
-├── sql/001_init.sql              # 扩展/表/索引/RLS/审计防篡改规则
+├── sql/001_init.sql              # 带前缀的表/索引/RLS/审计防篡改规则
 ├── src/
-│   ├── config.js                 # env schema 校验 + 全部安全阈值 + 系统提示
-│   ├── db/{pool,migrate}.js      # 连接池、withTenant(SET LOCAL)、迁移
+│   ├── config.js                 # env schema 校验 + 安全阈值 + 共享库端点校验
+│   ├── db/{tables,pool,migrate}.js  # 表名前缀常量、withTenant(SET LOCAL)、迁移
 │   ├── security/                 # ★ 所有防线，纯函数，可脱离 LLM 单测
 │   │   ├── patterns.js           # 注入 / 凭据 / PII / SSRF 规则库
 │   │   ├── injection.js          # Unicode 规范化、注入评分、不可信信封
@@ -117,8 +125,9 @@ curl -s -X POST localhost:3000/approve \
 │   ├── observability.js          # LangSmith 状态自检 / trace metadata / flush
 │   ├── app.js / server.js        # CLI 演示 / HTTP 入口（server 同时托管前端）
 │   ├── checkLlm.js               # 供应商连通性 / function calling 自检
+│   ├── checkDb.js                # 共享数据库只读诊断（不启动/重启服务）
 ├── public/                       # 安全控制台：index.html / styles.css / app.js
-└── test/                         # 47 个用例：单测 + 图级 + 可观测性 + LLM + Web
+└── test/                         # 54 个用例：单测 + 图级 + 可观测性 + LLM + Web + 命名约束
 ```
 
 ---
@@ -169,7 +178,7 @@ START
 | **L6** | `executeTools` | 沙箱逃逸、超时、工具输出注入 | 超时熔断、输出脱敏+截断、租户 ID 只从 session 取、SQL 全参数化 | 返回拒绝文本 | `registry.js` / `builtins.js` |
 | **L7** | `budgetGate` | 循环/成本爆炸 | 步数 + token + 墙钟 + 同签名重复熔断 + `recursionLimit` | 中断并拒绝 | `budget.js` |
 | **L8** | `guardOutput` | 密钥/PII 泄漏、系统提示泄漏、「已完成」幻觉 | 出口扫描 + 脱敏 + 用同 id 覆盖原消息 | 整段替换成安全话术 | `outputGuard.js` |
-| **L9** | 全程 | 抵赖、无法取证 | 每次决策落 `audit_events`，`RULE` 禁 UPDATE/DELETE，内容先脱敏 | 可配置 fail-open / fail-closed | `audit.js` / `001_init.sql` |
+| **L9** | 全程 | 抵赖、无法取证 | 每次决策落 `agent-security-lab_audit_events`，`RULE` 禁 UPDATE/DELETE，内容先脱敏 | 可配置 fail-open / fail-closed | `audit.js` / `001_init.sql` |
 
 > 面试时**必答** L1 / L2 / L4 / L5 / L7 / L8；L0、L3、L6、L9 是加分项。
 
@@ -207,7 +216,7 @@ START
 | 测试策略 | 假模型**故意不守规矩** | 安全测试不能依赖 LLM 的随机配合；把安全层做成纯函数 + 可注入依赖，才能稳定回归 |
 | 模型供应商耦合 | 只认 OpenAI 兼容协议 | DeepSeek / 硅基流动 / OpenAI / vLLM 换 3 个环境变量即可，防线挂在图节点上、不依赖某家模型「听话」。代价：接入前必须验证对方实现 function calling 与 usage 统计（`npm run check:llm`） |
 | LLM 与 embedding 凭据 | **两把 key、两个端点** | DeepSeek 的 `/embeddings` 实测 404；共用一个 key 既会崩、又扩大凭据暴露面。未配专用 embedding 就降级 local-hash（链路可跑，但无语义能力） |
-| 模型模式 vs 存储模式 | **两个正交开关** | 「真实 LLM + 内存存储」让无 Docker 环境也能演示完整链路；旧版把两者绑成一个 `offline`，填了 key 没起数据库就崩 |
+| 模型模式 vs 存储模式 | **两个正交开关** | 「真实 LLM + 内存存储」让共享数据库服务不可用时也能演示完整链路；旧版把两者绑成一个 `offline`，填了 key 没起数据库就崩 |
 | 第三方端点校验 | 强制 HTTPS + 禁 URL 内嵌凭据 | `LLM_BASE_URL` 决定 API key 发给谁，属于可信边界；明文 http 或 `?key=...` 直接启动失败，而不是运行时才发现外泄 |
 
 ---
@@ -283,12 +292,12 @@ LangChain.js / LangGraph 的 Runnable 会**自动读取环境变量**，不需�
 **三个安全约束**（这本身就是面试考点）：
 
 1. **密钥不进 config 对象**。`config.js` 把 `LLM_API_KEY` / `EMBEDDING_API_KEY` / `LANGSMITH_API_KEY` 从导出的对象里剥离，只在真正发请求时通过 `getSecret(name)` 白名单取用——防止 `console.log(config)`、错误堆栈或 trace metadata 整体带出密钥。`test/observability.test.js` 与 `test/llm.test.js` 都有回归断言。
-2. **trace metadata 最小披露**。`traceConfig()` 只挂 `traceId / sessionId / tenantId / role / modelProvider / modelMode / storeMode`，绝不挂用户输入、工具参数、系统提示，连 `userId` 都不给第三方。其中 `traceId` 与 `audit_events.trace_id` 一致，可在 LangSmith 与审计表之间双向定位。
+2. **trace metadata 最小披露**。`traceConfig()` 只挂 `traceId / sessionId / tenantId / role / modelProvider / modelMode / storeMode`，绝不挂用户输入、工具参数、系统提示，连 `userId` 都不给第三方。其中 `traceId` 与 `agent-security-lab_audit_events.trace_id` 一致，可在 LangSmith 与审计表之间双向定位。
 3. **开启追踪 = 再加一个数据出口**（模型供应商已经是第一个）。prompt、工具参数、模型输出会被发送到第三方。本项目已在入模前做 PII 脱敏，但生产仍需评估数据出境合规；金融/医疗场景应改自托管 LangSmith 或关闭内容采集。
 
-短命 CLI 进程退出前用 `awaitAllCallbacks()`（`flushTraces()`）等待后台 trace 提交完成，否则会丢最后几条 span。`npm test` 显式设 `LANGSMITH_TRACING=false LLM_PROVIDER=fake`，保证单测**不产生任何外部网络副作用**。
+短命 CLI 进程退出前用 `awaitAllCallbacks()`（`flushTraces()`）等待后台 trace 提交完成，否则会丢最后几条 span。`npm test` 显式设 `LANGSMITH_TRACING=false LLM_PROVIDER=fake STORE=memory`，保证单测**不受 `.env` 里的真实模型 / 共享数据库影响，零外部副作用**（数据库集成验证走 `npm run check:db` + `npm run migrate` + `STORE=postgres npm run demo`）。
 
-> **和 L9 审计的分工**：LangSmith 看「执行链路与性能」，可采样、可丢弃、由第三方保存；`audit_events` 看「安全决策与取证」，append-only、禁改禁删、留在自己的数据库。两者不能互相替代。
+> **和 L9 审计的分工**：LangSmith 看「执行链路与性能」，可采样、可丢弃、由第三方保存；`agent-security-lab_audit_events` 看「安全决策与取证」，append-only、禁改禁删、留在自己的数据库。两者不能互相替代。
 
 ---
 
@@ -360,13 +369,37 @@ LLM_API_KEY=<key>
 
 ## 12. 验证状态
 
-- `npm test`：**47 个用例全绿**（19 纯函数 + 8 图级端到端 + 4 可观测性 + 9 LLM 接入 + 7 Web）。
+- `npm test`：**54 个用例全绿**（19 纯函数 + 8 图级端到端 + 4 可观测性 + 9 LLM 接入 + 7 Web + 7 命名/连接约束）。
 - `npm run demo:offline`：7 条链路全部跑通，含注入拒绝、Unicode 混淆、RBAC、批准/驳回 HITL、记忆投毒隔离、PII 脱敏。
 - `npm run check:llm` / `npm run demo`（真实 DeepSeek）：连通性、function calling、完整图链路已实测。
 - `npm run web`：静态资源、CSP、`/health`、注入拒绝、HITL 审批与前端 XSS 约束均有自动化用例覆盖。
-- PostgreSQL / pgvector 路径需要 Docker；本机未安装，故未做容器实测。
+- **共享 PGlite 路径已实测通过**（2026-11-23）：启动既有 `db:local` 服务（PostgreSQL 18.7 / PGlite 0.5.17 + pgvector 0.8.7，仍是 `127.0.0.1:5432`；未安装 PostgreSQL/Docker、未新开端口），`npm run check:db` → `npm run migrate` → `STORE=postgres npm run demo` 全通过。
+- 库内实证：4 张 `agent-security-lab_` 业务表 + 独立 schema 下 4 张 checkpoint 表（public 无裸 checkpoint 表）；44 条审计事件、2 条审批记录、1 条 `quarantined` 投毒记忆、64 个 checkpoint 快照；对审计表执行 `UPDATE` 被 RULE 忽略、值未变。
 
 ```bash
 npm test && npm run demo:offline && npm run check:llm
+# 数据库：npm run check:db && npm run migrate && STORE=postgres npm run demo
 # 前端：npm run web，然后打开 http://localhost:3000/
 ```
+
+---
+
+## 13. 共享数据库与命名约定
+
+本机 `127.0.0.1:5432` 的 `postgres` 库由多个项目共用（PGlite / PostgreSQL 18.7 + pgvector 0.8.7）。本项目**不自建数据库、不启容器、不改端口**，只在这一个库里创建自己的对象。
+
+| 对象 | 全名 | 用途 |
+|---|---|---|
+| 审计事件 | `"agent-security-lab_audit_events"` | append-only，RULE 禁 UPDATE/DELETE |
+| 记忆向量 | `"agent-security-lab_memory_chunks"` | vector(1536) + RLS + trust 分级 |
+| 审批记录 | `"agent-security-lab_approval_records"` | 谁批准了什么 |
+| 示例订单 | `"agent-security-lab_orders"` | 只读工具的数据源 |
+| checkpoint | `"agent-security-lab".checkpoints` 等 4 张 | LangGraph HITL 状态快照 |
+
+几个容易踩的点：
+
+1. **前缀含连字符，必须双引号引用**。`SELECT * FROM agent-security-lab_orders` 会被解析成减法表达式直接报错。所有表 / 索引 / RULE / RLS 策略名都带前缀，且由 `src/db/tables.js` 的 `T` 常量集中导出；运行时 SQL 一律从它取，`test/schema.test.js` 断言 JS 与 `001_init.sql` 逐字一致，防止改一处漏一处。
+2. **官方 checkpointer 的表名改不了前缀**。`@langchain/langgraph-checkpoint-postgres` 在 `dist/sql.js` 里硬编码 `checkpoints` / `checkpoint_blobs` / `checkpoint_writes` / `checkpoint_migrations`，只支持自定义 schema。所以改用独立 schema `"agent-security-lab"`（构造时传 `checkpointOptions`），完整限定名同样以本项目命名空间开头，且与别的项目（包括它们自己的 checkpointer）彻底隔离。这是「第三方库不满足命名约定时怎么办」的真实取舍，比硬改表名更稳。
+3. **连接串在建连前校验**。`assertSharedDatabase()` 强制本机 + 5432 + `postgres` 库，禁止 URL 夹带密码 / 查询串；任何偏离直接启动失败，避免手滑连到别人的库或另开一条通道。
+4. **RLS 不是万能的**。表开了 `ENABLE` + `FORCE ROW LEVEL SECURITY`，策略按 `app.tenant_id` 过滤，未设置时返回 0 行（fail-closed）。但共享库用 `postgres` 超级用户连接，该角色自带 `BYPASSRLS` 会绕过策略——所以应用层 `withTenant()` + SQL 里显式 `tenant_id` 条件仍是必需的第二道兜底，生产应改用最小权限的专用 role。
+5. **迁移对共享环境友好**：只 `CREATE ... IF NOT EXISTS`，不 DROP 别人的对象；`gen_random_uuid()` 用 PG 13+ 内置函数，不额外要求 pgcrypto 权限；HNSW 索引放在容错 DO 块里，某些 PGlite 构建不支持 hnsw 时只发 NOTICE、不阻塞链路。

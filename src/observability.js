@@ -48,7 +48,7 @@ export function logTracingStatus() {
 /**
  * trace metadata 的最小披露原则：
  * 只放可用于关联排查的 ID 和枚举，绝不放用户输入、密钥、工具参数、系统提示。
- * traceId 与 audit_events.trace_id 一致，可以在 LangSmith 与审计表之间双向定位。
+ * traceId 与 "agent-security-lab_audit_events".trace_id 一致，可以在 LangSmith 与审计表之间双向定位。
  */
 export function traceConfig(identity, extra = {}) {
   return {

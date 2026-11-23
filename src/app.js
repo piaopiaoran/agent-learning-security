@@ -5,7 +5,7 @@ import { flushTraces, logDataEgress, logTracingStatus } from "./observability.js
 /**
  * 端到端演示：把每一条安全防线都跑一遍并打印审计链。
  *   npm run demo:offline  → fake 模型 + 内存存储，零密钥零成本、结果确定性
- *   npm run demo          → 按 .env 决定；默认「真实 LLM + 内存存储」，无需 Docker
+ *   npm run demo          → 按 .env 决定；默认「真实 LLM + 共享 PGlite」
  *   STORE=postgres npm run demo → 真实 LLM + PostgreSQL/pgvector（需先 npm run setup）
  */
 const forceOffline = process.argv.includes("--offline");
@@ -76,6 +76,6 @@ for (const sc of scenarios) {
   console.log("");
 }
 
-console.log(`共记录 ${scenarios.length} 条链路。真实部署时这些事件写入 PostgreSQL audit_events（append-only）。`);
+console.log(`共记录 ${scenarios.length} 条链路。STORE=postgres 时写入 "agent-security-lab_audit_events"（append-only）。`);
 await flushTraces();
 await runtime.close();

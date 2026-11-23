@@ -7,9 +7,11 @@ import { z } from "zod";
  * 这里故意让「未设置」时取最严格的默认值（fail-closed / secure by default）。
  */
 const schema = z.object({
-  DATABASE_URL: z.string().default("postgresql://postgres:postgres@localhost:5432/agent_sec"),
+  // 共用的本地 PGlite（PostgreSQL 18.7 + pgvector 0.8.7）服务，端口固定 5432。
+  // 不自建数据库、不启 Docker、不新开端口；所有表带 agent-security-lab_ 前缀隔离。
+  DATABASE_URL: z.string().default("postgresql://postgres@127.0.0.1:5432/postgres"),
 
-  // 存储与模型是两个正交开关：真实 LLM 可以配内存存储（无 Docker 也能跑），
+  // 存储与模型是两个正交开关：真实 LLM 可以配内存存储（共享库不可用时也能跑），
   // 假模型也可以配 PostgreSQL（只测持久化层）。旧版把它们绑在一个 offline 上，
   // 导致「填了 LLM key 但没起数据库」时 demo 直接崩。
   STORE: z.enum(["memory", "postgres"]).default("memory"),
@@ -68,6 +70,31 @@ export function assertSafeEndpoint(raw, label = "endpoint") {
     throw new Error(`[config] ${label} 不允许在 URL 中夹带凭据或查询串`);
   }
   return u.origin;
+}
+
+/**
+ * 共享数据库约束：这台机器上的 5432 由多个项目共用，本项目不允许改端口、
+ * 改库名或改主机（那等于在偷偷新建一条连接通道，可能连到别人的数据）。
+ * 该函数在每次真正创建连接池前调用，memory 模式下不触发。
+ */
+export function assertSharedDatabase(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error("[config] DATABASE_URL 不是合法连接串");
+  }
+  const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
+  if (!local || (u.port && u.port !== "5432")) {
+    throw new Error(`[config] DATABASE_URL 必须指向本机共享端口 5432，当前为 ${u.host}`);
+  }
+  if (u.pathname !== "/postgres") {
+    throw new Error(`[config] DATABASE_URL 必须连接共享的 postgres 库，当前为 ${u.pathname}`);
+  }
+  if (u.password || u.search || u.hash) {
+    throw new Error("[config] DATABASE_URL 不允许在 URL 中夹带密码或查询串");
+  }
+  return `${u.protocol}//${u.host}${u.pathname}`;
 }
 
 const parsed = schema.safeParse(process.env);

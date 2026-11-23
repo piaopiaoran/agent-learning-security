@@ -8,14 +8,15 @@
     "node": ">=20"
   },
   "scripts": {
-    "setup": "docker compose up -d && node src/db/migrate.js",
+    "setup": "node src/db/migrate.js",
     "migrate": "node src/db/migrate.js",
+    "check:db": "node src/checkDb.js",
     "demo": "node src/app.js",
     "demo:offline": "node src/app.js --offline",
     "check:llm": "node src/checkLlm.js",
     "server": "node src/server.js",
     "web": "node src/server.js",
-    "test": "LANGSMITH_TRACING=false LLM_PROVIDER=fake node --test test/*.test.js"
+    "test": "LANGSMITH_TRACING=false LLM_PROVIDER=fake STORE=memory node --test test/*.test.js"
   },
   "dependencies": {
     "@langchain/core": "^1.4.2",

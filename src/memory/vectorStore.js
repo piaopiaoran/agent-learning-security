@@ -3,6 +3,7 @@ import { withTenant } from "../db/pool.js";
 import { config } from "../config.js";
 import { scanInjection, scanSecrets, sanitizeRetrieved } from "../security/injection.js";
 import { redact } from "../security/pii.js";
+import { T } from "../db/tables.js";
 
 const hash = (s) => createHash("sha256").update(s).digest("hex");
 const vectorLiteral = (vec) => `[${vec.join(",")}]`;
@@ -27,7 +28,7 @@ export function createPgVectorStore({ pool, embedder }) {
       const [vec] = await embedder.embed([clean]);
       const row = await withTenant(pool, tenantId, (client) =>
         client.query(
-          `INSERT INTO memory_chunks (tenant_id, owner_id, source, trust, content, content_hash, embedding)
+          `INSERT INTO ${T.memoryChunks} (tenant_id, owner_id, source, trust, content, content_hash, embedding)
            VALUES ($1,$2,$3,$4,$5,$6,$7::vector)
            ON CONFLICT (content_hash) DO NOTHING
            RETURNING id, trust`,
@@ -44,7 +45,7 @@ export function createPgVectorStore({ pool, embedder }) {
         result: await client.query(
           `SELECT id::text, source, trust, content,
                   1 - (embedding <=> $1::vector) AS similarity
-             FROM memory_chunks
+             FROM ${T.memoryChunks}
             WHERE trust <> 'quarantined'
               AND embedding IS NOT NULL
             ORDER BY embedding <=> $1::vector
@@ -52,7 +53,7 @@ export function createPgVectorStore({ pool, embedder }) {
           [vectorLiteral(vec), safeK]
         ),
         excludedRes: await client.query(
-          "SELECT count(*)::int AS n FROM memory_chunks WHERE trust = 'quarantined'"
+          `SELECT count(*)::int AS n FROM ${T.memoryChunks} WHERE trust = 'quarantined'`
         ),
       }));
       const chunks = result.rows.map((r) => ({
